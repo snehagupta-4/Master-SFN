@@ -1,0 +1,177 @@
+{
+  "Comment": "A Step Function to load account and transaction data and perform a join",
+  "StartAt": "Initialize",
+  "States": {
+    "Initialize": {
+      "Type": "Pass",
+      "Next": "CheckFileType"
+    },
+    "CheckFileType": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.objectKey",
+          "StringMatches": "account*",
+          "Next": "LoadAccountStageTable"
+        },
+        {
+          "Variable": "$.objectKey",
+          "StringMatches": "Account*",
+          "Next": "LoadAccountStageTable"
+        },
+        {
+          "Variable": "$.objectKey",
+          "StringMatches": "transaction*",
+          "Next": "LoadTransactionStageTable"
+        },
+        {
+          "Variable": "$.objectKey",
+          "StringMatches": "Transaction*",
+          "Next": "LoadTransactionStageTable"
+        }
+      ],
+      "Default": "EndState"
+    },
+    "LoadAccountStageTable": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:014498661566:function:dummy_lambda",
+      "Next": "UpdateDynamoDBAccount"
+    },
+    "LoadTransactionStageTable": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:014498661566:function:dummy_lambda",
+      "Next": "UpdateDynamoDBTransaction"
+    },
+    "UpdateDynamoDBAccount": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:014498661566:function:UpdateDynamoDBAccount",
+      "Parameters": {
+        "fileType": "account",
+        "statusType": true
+      },
+      "ResultPath": "$.fileUpdateResult",
+      "Next": "CheckBothTablesLoaded"
+    },
+    "UpdateDynamoDBTransaction": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:014498661566:function:UpdateDynamoDBTransaction",
+      "Parameters": {
+        "fileType": "transaction",
+        "statusType": true
+      },
+      "ResultPath": "$.fileUpdateResult",
+      "Next": "CheckBothTablesLoaded"
+    },
+    "CheckBothTablesLoaded": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:014498661566:function:CheckBothTablesLoaded",
+      "Next": "CheckIfGenerateExtract"
+    },
+    "CheckIfGenerateExtract": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.bothLoaded",
+          "BooleanEquals": true,
+          "Next": "ApplyDyanamoDBLock"
+        },
+        {
+          "Variable": "$.bothLoaded",
+          "BooleanEquals": false,
+          "Next": "WaitForOtherFile"
+        }
+      ],
+      "Default": "EndState"
+    },
+    "ApplyDyanamoDBLock": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:014498661566:function:CheckExecutionFlag",
+      "Next": "DecideGenerateExtract"
+    },
+    "DecideGenerateExtract": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.lockedFiles",
+          "StringEquals": "account",
+          "Next": "TransactionPipeline"
+        },
+        {
+          "Variable": "$.lockedFiles",
+          "StringEquals": "transaction",
+          "Next": "AccountPipeline"
+        },
+        {
+          "Variable": "$.lockedFiles",
+          "IsNull": true,
+          "Next": "GracefulExit"
+        }
+      ],
+      "Default": "GracefulExit"
+    },
+    "GracefulExit": {
+      "Type": "Succeed",
+      "Comment": "Gracefully exit the flow"
+    },
+    "AccountPipeline": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "GenerateExtractAccount",
+          "States": {
+            "GenerateExtractAccount": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:014498661566:function:dummy_lambda",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "EndTransactionPipeline",
+          "States": {
+            "EndTransactionPipeline": {
+              "Type": "Succeed",
+              "Comment": "Ending Transaction pipeline as lock is acquired by Account"
+            }
+          }
+        }
+      ],
+      "Next": "GracefulExit"
+    },
+    "TransactionPipeline": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "GenerateExtractTransaction",
+          "States": {
+            "GenerateExtractTransaction": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:us-east-1:014498661566:function:dummy_lambda",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "EndAccountPipeline",
+          "States": {
+            "EndAccountPipeline": {
+              "Type": "Succeed",
+              "Comment": "Ending Account pipeline as lock is acquired by Transaction."
+            }
+          }
+        }
+      ],
+      "Next": "GracefulExit"
+    },
+    "WaitForOtherFile": {
+      "Type": "Wait",
+      "Seconds": 5,
+      "Next": "CheckBothTablesLoaded"
+    },
+    "EndState": {
+      "Type": "Fail",
+      "Error": "InvalidFileType",
+      "Cause": "The uploaded file is neither an account nor a transaction file."
+    }
+  }
+}
